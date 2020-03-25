@@ -1,0 +1,290 @@
+var createRingBuffer = function(length){
+    /* https://stackoverflow.com/a/4774081 */
+    var pointer = 0, buffer = [];
+    return {
+        push : function(item){
+            buffer[pointer] = item;
+            pointer = (pointer + 1) % length;
+            return item;
+        },
+        find: function (matcher) {
+            for (let i = 0; i < buffer.length; i++) {
+                var crt = buffer[i];
+                if (matcher(crt)) {
+                    return crt;
+                }
+            }
+        }
+    };
+};
+
+function observe_shit(pattern, maxDelay, maxCnt) {
+    var buff = createRingBuffer(20);
+    var observer = new PerformanceObserver(list => {
+        list.getEntries().filter(entry => entry.name.match(pattern))
+            .forEach(e => {
+                //console.log('ON_FRAGMENT_LOADED2 new perf entry', e, e.name);
+                buff.push(e);
+            });
+    });
+    observer.observe({ entryTypes: ['resource'] })
+
+    var parseHeaders = function (str) {
+        if (!str || !str.trim) {
+            return {};
+        }
+        var arr = str.trim().split(/[\r\n]+/);
+        var headerMap = {};
+        arr.forEach(function (line) {
+            var parts = line.split(': ');
+            var header = parts.shift();
+            var value = parts.join(': ');
+            headerMap[header] = value;
+        });
+        return headerMap;
+    };
+    var debounce = (func, delay, maxSize) => {
+        var timeout;
+        var argsBuff = []
+
+        return function () {
+            const context = this
+            argsBuff = argsBuff.concat(Array.from(arguments))
+
+            function flushData() {
+                func.apply(context, [argsBuff])
+                argsBuff = []
+            }
+
+            let later = function () {
+                timeout = null
+                flushData()
+            }
+
+            clearTimeout(timeout)
+
+            let callNow = (argsBuff.length >= maxSize)
+            if (callNow) {
+                flushData()
+            } else {
+                timeout = setTimeout(later, delay || 250);
+            }
+        }
+    }
+    var flushMetrics = function (args) {
+        var xhr = new XMLHttpRequest()
+        xhr.open("POST", 'https://dumpster.cam4.com/perf', true)
+        xhr.setRequestHeader("Content-Type", "application/json")
+        xhr.send(JSON.stringify(args))
+    }
+
+    var debouncedFlushMetrics = debounce(flushMetrics, maxDelay || 10000, maxCnt || 20)
+
+    var trackFragmentLoadedEvent = function (data) {
+        var frag = data.frag;
+        var stats = data.stats;
+        var xhr = data.networkDetails;
+        stats.duration = stats.tload - stats.trequest;
+        if (frag && frag.duration) {
+            stats.chunkDuration = frag.duration;
+        }
+        var responseHeaders = parseHeaders(xhr.getAllResponseHeaders());
+        delete responseHeaders['cache-control'];
+        delete responseHeaders['content-length'];
+        delete responseHeaders['content-type'];
+        delete responseHeaders['date'];
+        setTimeout(function() {
+            var performanceEntry = buff.find(function(e) {return e.name === frag._url});
+            if (!performanceEntry) {
+                console.log('!!!!!!!!!!!!! ON_FRAGMENT_LOADED performanceEntry is missing', frag._url);
+                performanceEntry = {};
+            }
+            var data = JSON.parse(JSON.stringify(performanceEntry));
+            data.name = data.name || frag._url;
+            data.headers = responseHeaders;
+            data.hslStats = stats;
+            debouncedFlushMetrics(data);
+        }, 200);
+    }
+    var trackLevelLoadedEvent = function (data) {
+        var details = data.details || {};
+        var stats = data.stats;
+        var xhr = data.networkDetails;
+        stats.duration = stats.tload - stats.trequest;
+        var responseHeaders = parseHeaders(xhr.getAllResponseHeaders());
+        delete responseHeaders['cache-control'];
+        delete responseHeaders['content-length'];
+        delete responseHeaders['content-type'];
+        delete responseHeaders['date'];
+        setTimeout(function() {
+            var performanceEntry = buff.find(function(e) {return e.name === details.url});
+            if (!performanceEntry) {
+                console.log('!!!!!!!!!!!!! ON_LEVEL_LOADED performanceEntry is missing', details.url);
+                performanceEntry = {};
+            }
+            var data = JSON.parse(JSON.stringify(performanceEntry));
+            data.name = data.name || details.url;
+            data.headers = responseHeaders;
+            data.hslStats = stats;
+            debouncedFlushMetrics(data);
+        }, 200);
+    }
+
+    function registerOnLoadedEvent() {
+        if (typeof Cam4Event !== 'undefined' && typeof Cam4Event.hlsPlayer !== 'undefined') {
+            Cam4Event.addEventListener(Cam4Event.hlsPlayer.ON_FRAGMENT_LOADED, trackFragmentLoadedEvent, 'dumpster_callback__ON_FRAGMENT_LOADED')
+            Cam4Event.addEventListener(Cam4Event.hlsPlayer.ON_LEVEL_LOADED, trackLevelLoadedEvent, 'dumpster_callback__ON_LEVEL_LOADED')
+            console.log('Cam4Event[ON_FRAGMENT_LOADED | ON_LEVEL_LOADED] listener registered');
+        } else {
+            registerOnLoadedEvent.attempt = (registerOnLoadedEvent.attempt || 0) + 1;
+            if (registerOnLoadedEvent.attempt > 10) {
+                console.log('Cam4Event not available, giving up');
+            } else {
+                console.log('Cam4Event not yet available, postponing listener registration (' + registerOnLoadedEvent.attempt + ' attempt)');
+                setTimeout(registerOnLoadedEvent, 3000);
+            }
+        }
+    }
+
+    registerOnLoadedEvent();
+}
+
+if (Math.random() < 0.1) {
+
+    // observe_shit('https://cam4-hls.xcdnpro.com/');
+    observe_shit('(\\.ts)|(\\.m3u)');
+}
+
+function trackDirectoryPreview(data) {
+    if (!data) {
+        console.log("Unable to track preview event: no data provided");
+        return;
+    }
+
+    setTimeout(function () {
+        $.ajax({
+            url: 'https://logger007.cam4.com/log/preview',
+            type: 'POST',
+            dataType: 'json',
+            contentType: 'application/json',
+            timeout: 3000,
+            headers: {
+                'X-Room': (data.room + "").toLowerCase(),
+                'X-Username': (data.username + "").toLowerCase(),
+            },
+            data: JSON.stringify(data)
+        });
+    }, 0);
+
+}
+
+if (typeof Cam4Event !== 'undefined') {
+    Cam4Event.addEventListener("DirectoryCamPreview", trackDirectoryPreview);
+}
+
+// md5
+// >>> sha512
+//
+// function stats(room) {
+//     var d = new Date();
+//     d = d - 2 * 60 * 1000;
+//     d = new Date(d);
+//     var inCnt = db.viewerStats.find({"broadcaster": room, startTime:{$gt:d}}).count();
+//     var prev = db.preview.find({"rooms.room": room, startTime:{$gt: d}}). count();
+//     return room + " " + (  inCnt / prev) + " in " + inCnt + ", prev " + prev
+// }
+//
+// var d = new Date();
+// d = d - 2 * 60 * 1000;
+// d = new Date(d);
+// var inCnt = db.viewerStats.find({startTime:{$gt:d}}).count();
+// var prev = db.preview.find({startTime:{$gt: d}}).count();
+//  (  inCnt / prev) + " in " + inCnt + ", prev " + prev
+//
+//
+// var d = new Date(new Date() - 2 * 60 * 1000);
+// var inCnt = db.viewerStats.find({startTime:{$gt:d}}).count();
+// var prev = db.preview.find({startTime:{$gt: d}}).count();
+// (  inCnt / prev) + " in " + inCnt + ", prev " + prev
+
+if (typeof ControlledFeatures !== 'undefined' && ControlledFeatures.SHOW_ANALYTICS_ON_DIRECTORY) {
+    function pullClickRateStats() {
+        var processData = function(data) {
+            data.forEach(e=> {
+                var crtVal = e.p > 0 ? (e.n / e.p * 100 ).toFixed(0)  : 0;
+                if (crtVal > 100) {
+                    crtVal = 100;
+                }
+                let crtClickRate = crtVal;
+                var sel = $('#directoryHtml a[href="/' + e.room + '"]');
+                var prevData = $('#directoryHtml a[href="/' + e.room + '"] div[data-scope="click-rate"]');
+                var prevText = (prevData.first().text()+"").split(' ')[0];
+                var fontBorderColor = '#000';
+                var delta = 0;
+                var deltaLabel = "";
+
+                var tips = e.tips;
+                var watchTime = e.watchTime;
+                var watchTimeDisplay = "";
+                var tokensPerHour = "";
+                if (watchTime > 0) {
+                    tokensPerHour =  (tips / (watchTime / 60 / 60)).toFixed(1);
+                    if (tokensPerHour > 0) {
+                        tokensPerHour = ", "  + tokensPerHour + "t/h"
+                    } else {
+                        tokensPerHour = "";
+                    }
+                }
+                if (watchTime / 60) {
+                    watchTimeDisplay = ", " + (watchTime / 60 / 60).toFixed(1) + "h";
+                }
+                if (prevText) {
+                    var prev = parseFloat(prevText);
+                    if (!isNaN(prev)) {
+                        delta = (crtVal - prev).toFixed(0);
+                    }
+                }
+                if (delta > 1) {
+                    deltaLabel = "  (" + (delta>0?"+":"") + delta + "%) ";
+                }
+                var previewsCntLabel = " " + e.p + " previews";
+                prevData.remove();
+                var fontColor;
+                if (crtVal > 50) {
+                    fontColor = 'green';
+                    fontBorderColor = 'gray';
+                } else if (crtVal > 20) {
+                    fontColor = 'white';
+                    fontBorderColor = 'black';
+                } else {
+                    fontColor = 'red';
+                    fontBorderColor = 'white';
+                }
+                var now = new Date();
+                var nowMinus1H = new Date();
+                nowMinus1H.setHours(now.getHours() - 1,0,0,0);
+                var endOfDay = new Date();
+                endOfDay.setHours(23,59,59,0);
+
+                let url = "http://analyticssandbox.mh-ams.cam4admin.com?username=" + e.room+"&fromDate=" + nowMinus1H.getTime() + "&toDate=" + endOfDay.getTime()+'&fields=clickRate';
+                sel.slice(1,2).append('<div  data-scope="click-rate" style="position: absolute; right: 0; z-index: 10; background-color: rgba(201, 201, 201, 0.8);">' +
+                    '<a  style=" text-shadow: 0 0 2px '+fontBorderColor+'; -moz-text-shadow: 0 0 2px '+fontBorderColor+';  -webkit-text-shadow: 0 0 2px '+fontBorderColor+'; font-size: smaller; color: ' + fontColor + '" href="' + url + '" target="_blank">' +
+                        '<span title="Click rate for last 2 min">' + crtClickRate + '%</span>' +
+                        ' from <span title="Preview on the last 2 min">' + previewsCntLabel + '</span>' +
+                        '<span title="Last 20s click rate variation">' + deltaLabel +'</span> ' +
+                        '<span title="Cumulative watch time for the last 2 min">' + watchTimeDisplay +'</span> ' +
+                        '<span title="Tokens per hour for the last 2 min">' + tokensPerHour +'</span> ' +
+                    '</a>' +
+                '</div>');
+            })
+        };
+        return $.ajax({
+            url: 'https://api.cam4.com/gloryhole/chronos/clickRate/?seconds=120&limit=5000&minPreviews=0',
+            // url: 'http://localhost:8085/chronos/clickRate/?seconds=120&limit=5000',
+            success: function(data) { processData(data); setTimeout(pullClickRateStats, 20000) },
+            error: function() {setTimeout(pullClickRateStats, 2000)}
+        })
+    };
+
+    pullClickRateStats();
+}

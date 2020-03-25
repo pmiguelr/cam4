@@ -1,0 +1,16 @@
+(function(){
+  window['optimizely'] = window['optimizely'] || [];
+  window['optimizely'].push(['activateGeoDelayedExperiments', {
+    'location':{
+      'city': "CARACAS",
+      'continent': "SA",
+      'country': "VE",
+      'region': ""
+    },
+    'ip':"190.204.237.174"
+  }]);
+})
+//
+()
+
+;
